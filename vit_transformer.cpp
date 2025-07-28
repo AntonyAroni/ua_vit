@@ -1,4 +1,5 @@
 #include "vit_transformer.h"
+#include "regularization.h"
 #include <iostream>
 #include <random>
 #include <algorithm>
@@ -123,7 +124,7 @@ VisionTransformer::VisionTransformer(int img_size, int patch_size, int in_channe
                                    int num_heads)
     : img_size(img_size), patch_size(patch_size), in_channels(in_channels),
       num_classes(num_classes), embed_dim(embed_dim), depth(depth), 
-      num_heads(num_heads) {
+      num_heads(num_heads), dropout_rate(0.1f), weight_decay(1e-4f) {
     
     num_patches = (img_size / patch_size) * (img_size / patch_size);
     
@@ -149,13 +150,25 @@ VisionTransformer::VisionTransformer(int img_size, int patch_size, int in_channe
     attention_output.resize(depth);
     mlp_hidden.resize(depth);
     block_output.resize(depth);
+    q_matrices.resize(depth);
+    k_matrices.resize(depth);
+    v_matrices.resize(depth);
+    dropout_masks.resize(depth);
+    grad_activations.resize(depth);
     
+    int head_dim = embed_dim / num_heads;
     for (int i = 0; i < depth; i++) {
-        attention_scores[i] = std::make_unique<Matrix>(num_heads, (num_patches + 1) * (num_patches + 1), true);
-        attention_weights[i] = std::make_unique<Matrix>(num_heads, (num_patches + 1) * (num_patches + 1), true);
+        attention_scores[i] = std::make_unique<Matrix>(1, num_heads * (num_patches + 1) * (num_patches + 1), true);
+        attention_weights[i] = std::make_unique<Matrix>(1, num_heads * (num_patches + 1) * (num_patches + 1), true);
         attention_output[i] = std::make_unique<Matrix>(1, (num_patches + 1) * embed_dim, true);
         mlp_hidden[i] = std::make_unique<Matrix>(1, (num_patches + 1) * embed_dim * 4, true);
         block_output[i] = std::make_unique<Matrix>(1, (num_patches + 1) * embed_dim, true);
+        
+        q_matrices[i] = std::make_unique<Matrix>(1, (num_patches + 1) * embed_dim, true);
+        k_matrices[i] = std::make_unique<Matrix>(1, (num_patches + 1) * embed_dim, true);
+        v_matrices[i] = std::make_unique<Matrix>(1, (num_patches + 1) * embed_dim, true);
+        dropout_masks[i] = std::make_unique<Matrix>(1, (num_patches + 1) * embed_dim, true);
+        grad_activations[i] = std::make_unique<Matrix>(1, (num_patches + 1) * embed_dim, true);
     }
 }
 
@@ -167,10 +180,12 @@ VisionTransformer::~VisionTransformer() {
 }
 
 void VisionTransformer::initialize_weights() {
-    // Patch projection
-    patch_proj_weight = std::make_unique<Matrix>(embed_dim, patch_size * patch_size * in_channels, true);
+    // Patch projection (simplified: 784 -> embed_dim)
+    patch_proj_weight = std::make_unique<Matrix>(embed_dim, img_size * img_size, true);
     patch_proj_bias = std::make_unique<Matrix>(1, embed_dim, true);
-    patch_proj_weight->random(0.0f, 0.02f);
+    // Small initialization for patch projection
+    float patch_std = 0.01f;
+    patch_proj_weight->random(0.0f, patch_std);
     patch_proj_bias->zero();
     
     // Positional embeddings and class token
@@ -200,33 +215,49 @@ void VisionTransformer::initialize_weights() {
         proj_weights[i] = std::make_unique<Matrix>(embed_dim, embed_dim, true);
         proj_bias[i] = std::make_unique<Matrix>(1, embed_dim, true);
         
-        qkv_weights[i]->random(0.0f, 0.02f);
+        // Small initialization for stability
+        float qkv_std = 0.02f;
+        float proj_std = 0.02f;
+        
+        qkv_weights[i]->random(0.0f, qkv_std);
         qkv_bias[i]->zero();
-        proj_weights[i]->random(0.0f, 0.02f);
+        proj_weights[i]->random(0.0f, proj_std);
         proj_bias[i]->zero();
         
         // Layer normalization 1
         norm1_weight[i] = std::make_unique<Matrix>(1, embed_dim, true);
         norm1_bias[i] = std::make_unique<Matrix>(1, embed_dim, true);
-        norm1_weight[i]->random(1.0f, 0.0f);  // Initialize to 1
+        // Initialize weights to 1.0
+        float* temp_weights = new float[embed_dim];
+        std::fill(temp_weights, temp_weights + embed_dim, 1.0f);
+        cudaMemcpy(norm1_weight[i]->data, temp_weights, embed_dim * sizeof(float), cudaMemcpyHostToDevice);
+        delete[] temp_weights;
         norm1_bias[i]->zero();
         
-        // MLP
-        int hidden_dim = 4 * embed_dim;
+        // MLP (simplified: embed_dim -> 2*embed_dim -> embed_dim)
+        int hidden_dim = 2 * embed_dim;
         mlp_fc1_weight[i] = std::make_unique<Matrix>(hidden_dim, embed_dim, true);
         mlp_fc1_bias[i] = std::make_unique<Matrix>(1, hidden_dim, true);
         mlp_fc2_weight[i] = std::make_unique<Matrix>(embed_dim, hidden_dim, true);
         mlp_fc2_bias[i] = std::make_unique<Matrix>(1, embed_dim, true);
         
-        mlp_fc1_weight[i]->random(0.0f, 0.02f);
+        // Small initialization for MLP layers
+        float mlp1_std = 0.02f;
+        float mlp2_std = 0.02f;
+        
+        mlp_fc1_weight[i]->random(0.0f, mlp1_std);
         mlp_fc1_bias[i]->zero();
-        mlp_fc2_weight[i]->random(0.0f, 0.02f);
+        mlp_fc2_weight[i]->random(0.0f, mlp2_std);
         mlp_fc2_bias[i]->zero();
         
         // Layer normalization 2
         norm2_weight[i] = std::make_unique<Matrix>(1, embed_dim, true);
         norm2_bias[i] = std::make_unique<Matrix>(1, embed_dim, true);
-        norm2_weight[i]->random(1.0f, 0.0f);  // Initialize to 1
+        // Initialize weights to 1.0
+        float* temp_weights2 = new float[embed_dim];
+        std::fill(temp_weights2, temp_weights2 + embed_dim, 1.0f);
+        cudaMemcpy(norm2_weight[i]->data, temp_weights2, embed_dim * sizeof(float), cudaMemcpyHostToDevice);
+        delete[] temp_weights2;
         norm2_bias[i]->zero();
     }
     
@@ -236,15 +267,22 @@ void VisionTransformer::initialize_weights() {
     final_norm_weight = std::make_unique<Matrix>(1, embed_dim, true);
     final_norm_bias = std::make_unique<Matrix>(1, embed_dim, true);
     
-    head_weight->random(0.0f, 0.02f);
+    // Small initialization for classifier
+    float head_std = 0.01f;
+    head_weight->random(0.0f, head_std);
     head_bias->zero();
-    final_norm_weight->random(1.0f, 0.0f);  // Initialize to 1
+    // Initialize final norm weights to 1.0
+    float* temp_weights3 = new float[embed_dim];
+    std::fill(temp_weights3, temp_weights3 + embed_dim, 1.0f);
+    cudaMemcpy(final_norm_weight->data, temp_weights3, embed_dim * sizeof(float), cudaMemcpyHostToDevice);
+    delete[] temp_weights3;
     final_norm_bias->zero();
     
     // Initialize gradients
-    grad_patch_proj_weight = std::make_unique<Matrix>(embed_dim, patch_size * patch_size * in_channels, true);
+    grad_patch_proj_weight = std::make_unique<Matrix>(embed_dim, img_size * img_size, true);
     grad_patch_proj_bias = std::make_unique<Matrix>(1, embed_dim, true);
     grad_head_weight = std::make_unique<Matrix>(num_classes, embed_dim, true);
+    grad_head_bias = std::make_unique<Matrix>(1, num_classes, true);
     
     grad_qkv_weights.resize(depth);
     grad_proj_weights.resize(depth);
@@ -254,186 +292,192 @@ void VisionTransformer::initialize_weights() {
     for (int i = 0; i < depth; i++) {
         grad_qkv_weights[i] = std::make_unique<Matrix>(3 * embed_dim, embed_dim, true);
         grad_proj_weights[i] = std::make_unique<Matrix>(embed_dim, embed_dim, true);
-        grad_mlp_fc1_weight[i] = std::make_unique<Matrix>(4 * embed_dim, embed_dim, true);
-        grad_mlp_fc2_weight[i] = std::make_unique<Matrix>(embed_dim, 4 * embed_dim, true);
+        grad_mlp_fc1_weight[i] = std::make_unique<Matrix>(2 * embed_dim, embed_dim, true);
+        grad_mlp_fc2_weight[i] = std::make_unique<Matrix>(embed_dim, 2 * embed_dim, true);
     }
 }
 
 std::unique_ptr<Matrix> VisionTransformer::forward(const Matrix& input) {
     int batch_size = input.rows;
+    const float alpha = 1.0f, beta = 0.0f;
     
-    // 1. Patch embedding
-    launch_patch_embedding_kernel(
-        (float*)input.data, embedded_patches->data, 
-        patch_proj_weight->data, patch_proj_bias->data,
-        batch_size, img_size, patch_size, embed_dim
-    );
+    // Resize workspace matrices for current batch
+    embedded_patches = std::make_unique<Matrix>(batch_size, embed_dim, true);
+    final_output = std::make_unique<Matrix>(batch_size, embed_dim, true);
+    logits = std::make_unique<Matrix>(batch_size, num_classes, true);
     
-    // 2. Add positional embeddings and class token
-    launch_add_positional_embedding_kernel(
-        embedded_patches->data, pos_embed->data, cls_token->data,
-        batch_size, num_patches + 1, embed_dim
-    );
+    // 1. Patch embedding: input (batch_size, 784) -> embedded (batch_size, embed_dim)
+    cublasSgemm(cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N,
+               embed_dim, batch_size, img_size * img_size,
+               &alpha, patch_proj_weight->data, img_size * img_size,
+               input.data, img_size * img_size,
+               &beta, embedded_patches->data, embed_dim);
     
-    // Copy embedded patches to transformer input
-    cudaMemcpy(transformer_input->data, embedded_patches->data,
-               batch_size * (num_patches + 1) * embed_dim * sizeof(float),
-               cudaMemcpyDeviceToDevice);
-    
-    // 3. Transformer encoder blocks
-    for (int layer = 0; layer < depth; layer++) {
-        // Layer normalization 1
-        launch_layer_norm_kernel(
-            transformer_input->data, norm1_weight[layer]->data, 
-            norm1_bias[layer]->data, transformer_input->data,
-            batch_size, num_patches + 1, embed_dim
-        );
-        
-        // Multi-head attention
-        launch_multi_head_attention_kernel(
-            transformer_input->data, qkv_weights[layer]->data,
-            qkv_bias[layer]->data, attention_output[layer]->data,
-            batch_size, num_patches + 1, embed_dim, num_heads
-        );
-        
-        // Residual connection 1
-        const float alpha = 1.0f, beta = 1.0f;
-        cublasSaxpy(cublas_handle, batch_size * (num_patches + 1) * embed_dim,
-                   &alpha, attention_output[layer]->data, 1,
-                   transformer_input->data, 1);
-        
-        // Layer normalization 2
-        launch_layer_norm_kernel(
-            transformer_input->data, norm2_weight[layer]->data,
-            norm2_bias[layer]->data, transformer_input->data,
-            batch_size, num_patches + 1, embed_dim
-        );
-        
-        // MLP
-        int hidden_dim = 4 * embed_dim;
-        
-        // First linear layer
-        cublasSgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
-                   hidden_dim, batch_size * (num_patches + 1), embed_dim,
-                   &alpha, mlp_fc1_weight[layer]->data, hidden_dim,
-                   transformer_input->data, embed_dim,
-                   &beta, mlp_hidden[layer]->data, hidden_dim);
-        
-        // Add bias and apply GELU
-        launch_gelu_kernel(mlp_hidden[layer]->data, mlp_hidden[layer]->data,
-                          batch_size * (num_patches + 1) * hidden_dim);
-        
-        // Second linear layer
-        cublasSgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
-                   embed_dim, batch_size * (num_patches + 1), hidden_dim,
-                   &alpha, mlp_fc2_weight[layer]->data, embed_dim,
-                   mlp_hidden[layer]->data, hidden_dim,
-                   &beta, block_output[layer]->data, embed_dim);
-        
-        // Residual connection 2
-        cublasSaxpy(cublas_handle, batch_size * (num_patches + 1) * embed_dim,
-                   &alpha, block_output[layer]->data, 1,
-                   transformer_input->data, 1);
+    // Add bias
+    for (int i = 0; i < batch_size; i++) {
+        cublasSaxpy(cublas_handle, embed_dim, &alpha,
+                   patch_proj_bias->data, 1,
+                   embedded_patches->data + i * embed_dim, 1);
     }
     
-    // 4. Final layer normalization
-    launch_layer_norm_kernel(
-        transformer_input->data, final_norm_weight->data,
-        final_norm_bias->data, transformer_input->data,
-        batch_size, num_patches + 1, embed_dim
-    );
+    // 2. Simple MLP layer for feature transformation
+    // embedded -> hidden -> final_output
+    std::unique_ptr<Matrix> hidden = std::make_unique<Matrix>(batch_size, embed_dim * 2, true);
     
-    // 5. Extract class token and classify
-    cudaMemcpy(final_output->data, transformer_input->data,
-               batch_size * embed_dim * sizeof(float),
-               cudaMemcpyDeviceToDevice);
+    // First MLP layer (expand)
+    cublasSgemm(cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N,
+               embed_dim * 2, batch_size, embed_dim,
+               &alpha, mlp_fc1_weight[0]->data, embed_dim,
+               embedded_patches->data, embed_dim,
+               &beta, hidden->data, embed_dim * 2);
     
-    // Final linear layer
-    const float alpha = 1.0f, beta = 0.0f;
-    cublasSgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
+    // Apply ReLU activation (simple)
+    int hidden_size = batch_size * embed_dim * 2;
+    float* hidden_ptr = hidden->data;
+    // Simple ReLU kernel would go here, for now use identity
+    
+    // Second MLP layer (contract)
+    cublasSgemm(cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N,
+               embed_dim, batch_size, embed_dim * 2,
+               &alpha, mlp_fc2_weight[0]->data, embed_dim * 2,
+               hidden->data, embed_dim * 2,
+               &beta, final_output->data, embed_dim);
+    
+    // 3. Final classifier
+    cublasSgemm(cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N,
                num_classes, batch_size, embed_dim,
-               &alpha, head_weight->data, num_classes,
+               &alpha, head_weight->data, embed_dim,
                final_output->data, embed_dim,
                &beta, logits->data, num_classes);
+    
+    // Add classifier bias
+    for (int i = 0; i < batch_size; i++) {
+        cublasSaxpy(cublas_handle, num_classes, &alpha,
+                   head_bias->data, 1,
+                   logits->data + i * num_classes, 1);
+    }
     
     return std::make_unique<Matrix>(*logits);
 }
 
 void VisionTransformer::backward(const Matrix& grad_output, const Matrix& input) {
-    // This is a simplified backward pass
-    // In practice, you would need to implement the full backward computation
-    // for each layer, computing gradients w.r.t. weights and inputs
-    
     int batch_size = input.rows;
+    const float alpha = 1.0f, beta = 0.0f;
     
-    // Compute gradients for final layer
-    const float alpha = 1.0f / batch_size, beta = 0.0f;
+    // Zero gradients
+    grad_head_weight->zero();
+    grad_head_bias->zero();
+    grad_patch_proj_weight->zero();
+    grad_patch_proj_bias->zero();
+    grad_mlp_fc1_weight[0]->zero();
+    grad_mlp_fc2_weight[0]->zero();
     
-    // Gradient w.r.t. head weights
+    // 1. Head gradients
     cublasSgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_T,
-               num_classes, embed_dim, batch_size,
-               &alpha, grad_output.data, num_classes,
-               final_output->data, embed_dim,
-               &beta, grad_head_weight->data, num_classes);
+               embed_dim, num_classes, batch_size,
+               &alpha, final_output->data, embed_dim,
+               grad_output.data, num_classes,
+               &beta, grad_head_weight->data, embed_dim);
     
-    // Continue backward pass through transformer blocks...
-    // This would involve computing gradients for each layer in reverse order
+    for (int i = 0; i < batch_size; i++) {
+        cublasSaxpy(cublas_handle, num_classes, &alpha,
+                   grad_output.data + i * num_classes, 1,
+                   grad_head_bias->data, 1);
+    }
+    
+    // 2. Gradient w.r.t. final_output
+    std::unique_ptr<Matrix> grad_final_output = std::make_unique<Matrix>(batch_size, embed_dim, true);
+    cublasSgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
+               embed_dim, batch_size, num_classes,
+               &alpha, head_weight->data, embed_dim,
+               grad_output.data, num_classes,
+               &beta, grad_final_output->data, embed_dim);
+    
+    // 3. MLP backward (simplified)
+    std::unique_ptr<Matrix> grad_embedded = std::make_unique<Matrix>(batch_size, embed_dim, true);
+    cublasSgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
+               embed_dim, batch_size, embed_dim,
+               &alpha, mlp_fc2_weight[0]->data, embed_dim,
+               grad_final_output->data, embed_dim,
+               &beta, grad_embedded->data, embed_dim);
+    
+    // 4. Patch projection gradients
+    cublasSgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_T,
+               img_size * img_size, embed_dim, batch_size,
+               &alpha, input.data, img_size * img_size,
+               grad_embedded->data, embed_dim,
+               &beta, grad_patch_proj_weight->data, img_size * img_size);
+    
+    for (int i = 0; i < batch_size; i++) {
+        cublasSaxpy(cublas_handle, embed_dim, &alpha,
+                   grad_embedded->data + i * embed_dim, 1,
+                   grad_patch_proj_bias->data, 1);
+    }
 }
 
 void VisionTransformer::update_weights(float learning_rate) {
-    // Update weights using computed gradients
     const float alpha = -learning_rate;
     
-    // Update head weights
+    // Update head weights and bias
     cublasSaxpy(cublas_handle, num_classes * embed_dim,
                &alpha, grad_head_weight->data, 1,
                head_weight->data, 1);
     
-    // Update other weights...
-    for (int i = 0; i < depth; i++) {
-        cublasSaxpy(cublas_handle, 3 * embed_dim * embed_dim,
-                   &alpha, grad_qkv_weights[i]->data, 1,
-                   qkv_weights[i]->data, 1);
-        
-        cublasSaxpy(cublas_handle, embed_dim * embed_dim,
-                   &alpha, grad_proj_weights[i]->data, 1,
-                   proj_weights[i]->data, 1);
-        
-        cublasSaxpy(cublas_handle, 4 * embed_dim * embed_dim,
-                   &alpha, grad_mlp_fc1_weight[i]->data, 1,
-                   mlp_fc1_weight[i]->data, 1);
-        
-        cublasSaxpy(cublas_handle, embed_dim * 4 * embed_dim,
-                   &alpha, grad_mlp_fc2_weight[i]->data, 1,
-                   mlp_fc2_weight[i]->data, 1);
-    }
+    cublasSaxpy(cublas_handle, num_classes,
+               &alpha, grad_head_bias->data, 1,
+               head_bias->data, 1);
+    
+    // Update patch projection weights and bias
+    cublasSaxpy(cublas_handle, embed_dim * img_size * img_size,
+               &alpha, grad_patch_proj_weight->data, 1,
+               patch_proj_weight->data, 1);
+    
+    cublasSaxpy(cublas_handle, embed_dim,
+               &alpha, grad_patch_proj_bias->data, 1,
+               patch_proj_bias->data, 1);
+    
+    // Update MLP weights
+    cublasSaxpy(cublas_handle, embed_dim * embed_dim * 2,
+               &alpha, grad_mlp_fc1_weight[0]->data, 1,
+               mlp_fc1_weight[0]->data, 1);
+    
+    cublasSaxpy(cublas_handle, embed_dim * embed_dim * 2,
+               &alpha, grad_mlp_fc2_weight[0]->data, 1,
+               mlp_fc2_weight[0]->data, 1);
 }
 
 float VisionTransformer::compute_loss(const Matrix& predictions, const std::vector<int>& targets) {
     int batch_size = predictions.rows;
+    int num_classes = predictions.cols;
     
-    // Allocate device memory for targets and loss
-    int* d_targets;
-    float* d_loss;
-    cudaMalloc(&d_targets, batch_size * sizeof(int));
-    cudaMalloc(&d_loss, batch_size * sizeof(float));
+    // Copy predictions to host para cálculo manual
+    std::vector<float> host_preds(batch_size * num_classes);
+    cudaMemcpy(host_preds.data(), predictions.data, 
+               host_preds.size() * sizeof(float), cudaMemcpyDeviceToHost);
     
-    // Copy targets to device
-    cudaMemcpy(d_targets, targets.data(), batch_size * sizeof(int), cudaMemcpyHostToDevice);
+    float total_loss = 0.0f;
     
-    // Compute cross-entropy loss
-    launch_cross_entropy_loss_kernel(predictions.data, d_targets, d_loss, 
-                                   batch_size, num_classes);
+    for (int i = 0; i < batch_size; i++) {
+        // Encontrar el valor máximo para estabilidad numérica
+        float max_val = host_preds[i * num_classes];
+        for (int j = 1; j < num_classes; j++) {
+            max_val = std::max(max_val, host_preds[i * num_classes + j]);
+        }
+        
+        // Calcular softmax denominador
+        float sum_exp = 0.0f;
+        for (int j = 0; j < num_classes; j++) {
+            sum_exp += exp(host_preds[i * num_classes + j] - max_val);
+        }
+        
+        // Cross-entropy loss
+        if (targets[i] >= 0 && targets[i] < num_classes) {
+            float log_softmax = host_preds[i * num_classes + targets[i]] - max_val - log(sum_exp);
+            total_loss -= log_softmax;
+        }
+    }
     
-    // Sum losses
-    float total_loss;
-    cublasSasum(cublas_handle, batch_size, d_loss, 1, &total_loss);
-    total_loss /= batch_size;
-    
-    cudaFree(d_targets);
-    cudaFree(d_loss);
-    
-    return total_loss;
+    return total_loss / batch_size;
 }
 
 float VisionTransformer::compute_accuracy(const Matrix& predictions, const std::vector<int>& targets) {

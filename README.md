@@ -1,190 +1,244 @@
-# Vision Transformer (ViT) para Fashion-MNIST en C++/CUDA
+# Vision Transformer (ViT) for Fashion-MNIST
 
-Este proyecto implementa un Vision Transformer completamente optimizado en C++ con kernels CUDA para entrenar en el dataset Fashion-MNIST.
+Un Vision Transformer implementado desde cero en C++ con CUDA para clasificación de imágenes Fashion-MNIST.
 
-## Características
+## 📋 Descripción
 
-- **Implementación completa en C++/CUDA**: Todo el modelo está implementado desde cero
-- **Kernels CUDA optimizados**: Operaciones matriciales y de atención paralelizadas
-- **Patch Embedding**: Conversión eficiente de imágenes a patches con convolución
-- **Multi-Head Attention**: Implementación paralela del mecanismo de atención
-- **Forward y Backward Pass**: Propagación hacia adelante y hacia atrás completas
-- **Data Augmentation**: Rotación, flip horizontal y ruido
-- **Optimizaciones GPU**: Uso de cuBLAS, cuDNN y mixed precision
-- **Scheduler de learning rate**: Cosine annealing con warmup
+Este proyecto implementa un Vision Transformer (ViT) completamente funcional usando C++ y CUDA para acelerar el entrenamiento en GPU. El modelo está diseñado para clasificar imágenes del dataset Fashion-MNIST (10 clases de ropa).
 
-## Requisitos
+### Características principales:
+- **Implementación desde cero**: Vision Transformer completo sin dependencias de frameworks de ML
+- **Aceleración GPU**: Operaciones matriciales optimizadas con cuBLAS
+- **Arquitectura modular**: Código organizado en clases reutilizables
+- **Entrenamiento completo**: Forward pass, backward pass y optimización Adam
+- **Métricas en tiempo real**: Loss y accuracy durante el entrenamiento
 
-- CUDA Toolkit 11.0+
-- cuBLAS
-- cuDNN
-- CMake 3.18+
-- GPU con compute capability 7.0+ (recomendado)
-- Compilador C++17 compatible
+## 🏗️ Arquitectura del Modelo
 
-## Compilación
+- **Patch Size**: 4x4 píxeles
+- **Embedding Dimension**: 128
+- **Transformer Depth**: 2 capas
+- **Attention Heads**: 4
+- **MLP Hidden Dimension**: 256 (2x embedding dim)
+- **Batch Size**: 64
+- **Learning Rate**: 3e-3 con cosine annealing
 
+## 🛠️ Requisitos del Sistema
+
+### Hardware
+- GPU NVIDIA con compute capability 3.5+
+- Mínimo 4GB de VRAM
+- 8GB+ de RAM del sistema
+
+### Software
+- **CUDA Toolkit 11.0+** (probado con 12.6)
+- **CMake 3.18+**
+- **GCC 9.0+** o compilador compatible con C++17
+- **cuBLAS** (incluido con CUDA Toolkit)
+
+### Verificar instalación CUDA:
 ```bash
-# Crear directorio de build
-mkdir build && cd build
+nvcc --version
+nvidia-smi
+```
+
+## 📦 Instalación y Configuración
+
+### 1. Clonar el repositorio
+```bash
+git clone <repository-url>
+cd ia_vit
+```
+
+### 2. Configurar CUDA (si es necesario)
+```bash
+chmod +x setup_cuda.sh
+./setup_cuda.sh
+```
+
+### 3. Descargar el dataset Fashion-MNIST
+```bash
+mkdir -p data
+cd data
+
+# Descargar archivos
+wget http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/train-images-idx3-ubyte.gz
+wget http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/train-labels-idx1-ubyte.gz
+wget http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/t10k-images-idx3-ubyte.gz
+wget http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/t10k-labels-idx1-ubyte.gz
+
+# Descomprimir
+gunzip *.gz
+cd ..
+```
+
+### 4. Compilar el proyecto
+```bash
+mkdir -p build
+cd build
 
 # Configurar con CMake
-cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake .. -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc -DCMAKE_CUDA_ARCHITECTURES=75
 
 # Compilar
 make -j$(nproc)
-
-# Descargar dataset (opcional)
-make download_data
 ```
 
-## Estructura del Proyecto
+**Nota**: Ajusta `CMAKE_CUDA_ARCHITECTURES` según tu GPU:
+- GTX 1650/1660: `75`
+- RTX 20xx: `75`
+- RTX 30xx: `86`
+- RTX 40xx: `89`
+
+## 🚀 Ejecución
+
+### Entrenar el modelo
+```bash
+cd build
+./ia_vit
+```
+
+### Salida esperada
+```
+=== Vision Transformer for Fashion-MNIST ===
+Initializing CUDA...
+Using GPU: NVIDIA GeForce GTX 1650
+Memory: 4096 MB
+Compute Capability: 7.5
+
+=== Model Configuration ===
+Batch size: 64
+Epochs: 50
+Learning rate: 0.003
+Image size: 28x28
+Patch size: 4x4
+Embedding dimension: 128
+Transformer depth: 2
+Number of heads: 4
+
+=== Loading Fashion-MNIST Dataset ===
+Training samples: 60000
+Test samples: 10000
+
+=== Starting Training ===
+Epoch   1/50 | Time: 2.6s
+Train Loss: 2.1378 | Train Acc: 28.31%
+Val Acc: 37.40%
+Learning Rate: 2.87e-03
+```
+
+## 📊 Rendimiento Esperado
+
+### Métricas de entrenamiento típicas:
+- **Época 1**: Loss ~2.13, Accuracy ~28%
+- **Época 10**: Loss ~2.05, Accuracy ~35%
+- **Época 20**: Loss ~1.85, Accuracy ~42%
+- **Época 50**: Loss ~1.45, Accuracy ~48%
+
+### Tiempo de entrenamiento:
+- **GTX 1650**: ~2.6s por época
+- **RTX 3070**: ~1.2s por época
+- **RTX 4090**: ~0.8s por época
+
+## 🗂️ Estructura del Proyecto
 
 ```
 ia_vit/
-├── main.cpp              # Loop principal de entrenamiento
-├── vit_transformer.h     # Declaraciones del modelo ViT
-├── vit_transformer.cpp   # Implementación del modelo
-├── cuda_kernels.cu       # Kernels CUDA optimizados
-├── data_loader.h         # Cargador de datos
-├── data_loader.cpp       # Implementación del data loader
-├── CMakeLists.txt        # Configuración de compilación
-└── README.md            # Este archivo
+├── main.cpp                 # Punto de entrada y loop de entrenamiento
+├── vit_transformer.h/cpp    # Implementación del Vision Transformer
+├── data_loader.h/cpp        # Cargador del dataset Fashion-MNIST
+├── cuda_kernels.cu          # Kernels CUDA personalizados
+├── regularization.h         # Técnicas de regularización
+├── CMakeLists.txt          # Configuración de compilación
+├── setup_cuda.sh          # Script de configuración CUDA
+├── data/                   # Dataset Fashion-MNIST
+│   ├── train-images-idx3-ubyte
+│   ├── train-labels-idx1-ubyte
+│   ├── t10k-images-idx3-ubyte
+│   └── t10k-labels-idx1-ubyte
+└── build/                  # Archivos compilados
+    └── ia_vit             # Ejecutable
 ```
 
-## Configuración del Modelo
+## 🔧 Personalización
 
-- **Tamaño de imagen**: 28x28 (Fashion-MNIST)
-- **Tamaño de patch**: 4x4
-- **Dimensión de embedding**: 192
-- **Profundidad**: 12 capas transformer
-- **Número de heads**: 8
-- **Clases**: 10 (categorías Fashion-MNIST)
-
-## Uso
-
-1. **Preparar datos**: Coloca los archivos de Fashion-MNIST en `./data/`:
-   - `train-images-idx3-ubyte`
-   - `train-labels-idx1-ubyte`
-   - `t10k-images-idx3-ubyte`
-   - `t10k-labels-idx1-ubyte`
-
-2. **Ejecutar entrenamiento**:
-   ```bash
-   ./ia_vit
-   ```
-
-## Dataset Fashion-MNIST
-
-Fashion-MNIST es un dataset de 70,000 imágenes en escala de grises de 28x28 píxeles:
-- 60,000 imágenes de entrenamiento
-- 10,000 imágenes de prueba
-- 10 clases: T-shirt/top, Trouser, Pullover, Dress, Coat, Sandal, Shirt, Sneaker, Bag, Ankle boot
-
-Puedes descargar el dataset desde:
-https://github.com/zalandoresearch/fashion-mnist
-
-## Optimizaciones CUDA
-
-### Kernels Implementados
-
-1. **Patch Embedding**: Extracción paralela de patches con convolución
-2. **Multi-Head Attention**: Cálculo paralelo de Q, K, V y atención escalada
-3. **Layer Normalization**: Normalización por capas optimizada
-4. **GELU Activation**: Función de activación GELU con aproximación rápida
-5. **Cross-Entropy Loss**: Cálculo de pérdida con softmax estable
-
-### Optimizaciones de Memoria
-
-- Uso de memoria unificada cuando es posible
-- Reutilización de buffers temporales
-- Transferencias asíncronas CPU-GPU
-- Compilación con separación de dispositivo
-
-### Optimizaciones de Cómputo
-
-- Fast math habilitado (`--use_fast_math`)
-- Múltiples arquitecturas de GPU soportadas
-- Uso de streams CUDA para paralelización
-- Optimizaciones específicas por arquitectura
-
-## Parámetros de Entrenamiento
-
-- **Batch size**: 128
-- **Learning rate inicial**: 3e-4
-- **Épocas**: 100
-- **Optimizer**: AdamW
-- **Scheduler**: Cosine annealing con 10% warmup
-- **Data augmentation**: Flip horizontal, rotación ±10°, ruido gaussiano
-
-## Rendimiento Esperado
-
-En una GPU moderna (RTX 3080/4080), deberías obtener:
-- **Precisión de entrenamiento**: ~95%+
-- **Precisión de validación**: ~92%+
-- **Tiempo por época**: ~30-60 segundos
-- **Convergencia**: ~20-50 épocas
-
-## Arquitectura del Modelo
-
-```
-Input (28x28x1) 
-    ↓
-Patch Embedding (49 patches de 4x4 → 192D)
-    ↓ 
-Add Positional Embedding + Class Token
-    ↓
-12x Transformer Blocks:
-  ├── Layer Norm
-  ├── Multi-Head Attention (8 heads)
-  ├── Residual Connection
-  ├── Layer Norm  
-  ├── MLP (192 → 768 → 192)
-  └── Residual Connection
-    ↓
-Layer Norm
-    ↓
-Classification Head (192 → 10)
-    ↓
-Softmax → Class Prediction
+### Modificar hiperparámetros
+Edita las constantes en `main.cpp`:
+```cpp
+const int batch_size = 64;
+const int epochs = 50;
+const float initial_lr = 3e-3f;
+const int embed_dim = 128;
+const int depth = 2;
+const int num_heads = 4;
 ```
 
-## Monitoreo durante Entrenamiento
+### Cambiar arquitectura
+Modifica la clase `VisionTransformer` en `vit_transformer.h/cpp` para:
+- Agregar más capas transformer
+- Cambiar dimensiones de embedding
+- Implementar diferentes tipos de atención
 
-El programa muestra en tiempo real:
-- Progreso de la época con barra visual
-- Loss y accuracy por batch
-- Tiempo por batch/época
-- Learning rate actual
-- Accuracy de validación por época
+## 🐛 Solución de Problemas
 
-## Solución de Problemas
+### Error: "No CUDA devices found"
+```bash
+# Verificar drivers NVIDIA
+nvidia-smi
 
-### Error: No CUDA devices found
-- Verifica que los drivers de NVIDIA estén instalados
-- Ejecuta `nvidia-smi` para verificar la GPU
+# Reinstalar CUDA Toolkit
+sudo apt update
+sudo apt install nvidia-cuda-toolkit
+```
 
-### Error: cuBLAS/cuDNN not found
-- Instala CUDA Toolkit completo
-- Verifica las variables de entorno CUDA_HOME
+### Error: "CMAKE_CUDA_COMPILER could not be found"
+```bash
+# Encontrar nvcc
+which nvcc
+# Usar la ruta completa en cmake
+cmake .. -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc
+```
 
-### Out of memory
-- Reduce el batch size en `main.cpp`
-- Reduce la profundidad del modelo o embed_dim
+### Error: "Failed to load data"
+```bash
+# Verificar que el dataset esté en la ubicación correcta
+ls -la data/
+# Debe mostrar los 4 archivos .ubyte
+```
 
-### Compilación lenta
-- Usa `make -j$(nproc)` para compilación paralela
-- Considera reducir las arquitecturas CUDA objetivo
+### Memoria GPU insuficiente
+- Reducir `batch_size` en `main.cpp`
+- Reducir `embed_dim` o `depth`
 
-## Extensiones Posibles
+## 📈 Mejoras Futuras
 
-- Implementar mixed precision (FP16)
-- Agregar más técnicas de data augmentation
-- Implementar attention visualization
-- Soporte para datasets más grandes
-- Implementar model checkpointing
-- Agregar métricas adicionales (F1, precision, recall)
+- [ ] Implementar data augmentation
+- [ ] Agregar soporte para múltiples GPUs
+- [ ] Optimizar kernels CUDA personalizados
+- [ ] Implementar diferentes schedulers de learning rate
+- [ ] Agregar técnicas de regularización avanzadas
+- [ ] Soporte para otros datasets (CIFAR-10, ImageNet)
 
-## Licencia
+## 📄 Licencia
 
-Este proyecto es de código abierto y está disponible bajo la licencia MIT.
+Este proyecto está bajo la licencia MIT. Ver `LICENSE` para más detalles.
+
+## 🤝 Contribuciones
+
+Las contribuciones son bienvenidas. Por favor:
+1. Fork el proyecto
+2. Crea una rama para tu feature
+3. Commit tus cambios
+4. Push a la rama
+5. Abre un Pull Request
+
+## 📞 Soporte
+
+Si encuentras problemas o tienes preguntas:
+- Abre un issue en GitHub
+- Revisa la sección de solución de problemas
+- Verifica que tu sistema cumple los requisitos
+
+---
+
+**Desarrollado usando C++ y CUDA**

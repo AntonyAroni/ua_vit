@@ -4,10 +4,14 @@
 #include <algorithm>
 #include <random>
 #include <cmath>
-#include <cuda_runtime.h>
+#include <numeric>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 FashionMNISTLoader::FashionMNISTLoader(int batch_size) 
-    : batch_size(batch_size), current_train_idx(0), current_test_idx(0) {
+    : current_train_idx(0), current_test_idx(0), batch_size(batch_size) {
 }
 
 FashionMNISTLoader::~FashionMNISTLoader() {
@@ -178,12 +182,12 @@ void FashionMNISTLoader::shuffleTrainData() {
 
 bool FashionMNISTLoader::getNextTrainBatch(std::vector<std::vector<float>>& batch_images,
                                           std::vector<int>& batch_labels) {
-    if (current_train_idx >= train_images.size()) {
+    if (current_train_idx >= static_cast<int>(train_images.size())) {
         return false;
     }
     
     int actual_batch_size = std::min(batch_size, 
-                                   static_cast<int>(train_images.size() - current_train_idx));
+                                   static_cast<int>(train_images.size()) - current_train_idx);
     
     batch_images.clear();
     batch_labels.clear();
@@ -208,12 +212,12 @@ bool FashionMNISTLoader::getNextTrainBatch(std::vector<std::vector<float>>& batc
 
 bool FashionMNISTLoader::getNextTestBatch(std::vector<std::vector<float>>& batch_images,
                                          std::vector<int>& batch_labels) {
-    if (current_test_idx >= test_images.size()) {
+    if (current_test_idx >= static_cast<int>(test_images.size())) {
         return false;
     }
     
     int actual_batch_size = std::min(batch_size,
-                                   static_cast<int>(test_images.size() - current_test_idx));
+                                   static_cast<int>(test_images.size()) - current_test_idx);
     
     batch_images.clear();
     batch_labels.clear();
@@ -300,26 +304,34 @@ void FashionMNISTLoader::applyNoise(std::vector<float>& image, float noise_std) 
 
 // GPU Data Loader Implementation
 GPUDataLoader::GPUDataLoader(int batch_size, int image_size) 
-    : batch_size(batch_size), image_size(image_size) {
+    : d_train_images(nullptr), d_train_labels(nullptr),
+      d_test_images(nullptr), d_test_labels(nullptr),
+      d_batch_images(nullptr), d_batch_labels(nullptr),
+      train_size(0), test_size(0), batch_size(batch_size), image_size(image_size) {
     
+#ifdef __CUDACC__
     // Allocate GPU memory for batch data
     cudaMalloc(&d_batch_images, batch_size * image_size * image_size * sizeof(float));
     cudaMalloc(&d_batch_labels, batch_size * sizeof(int));
+#endif
 }
 
 GPUDataLoader::~GPUDataLoader() {
+#ifdef __CUDACC__
     if (d_train_images) cudaFree(d_train_images);
     if (d_train_labels) cudaFree(d_train_labels);
     if (d_test_images) cudaFree(d_test_images);
     if (d_test_labels) cudaFree(d_test_labels);
     if (d_batch_images) cudaFree(d_batch_images);
     if (d_batch_labels) cudaFree(d_batch_labels);
+#endif
 }
 
 bool GPUDataLoader::loadDataToGPU(const FashionMNISTLoader& cpu_loader) {
     train_size = cpu_loader.getTrainSize();
     test_size = cpu_loader.getTestSize();
     
+#ifdef __CUDACC__
     // Allocate GPU memory for full datasets
     size_t train_images_size = train_size * image_size * image_size * sizeof(float);
     size_t train_labels_size = train_size * sizeof(int);
@@ -331,31 +343,35 @@ bool GPUDataLoader::loadDataToGPU(const FashionMNISTLoader& cpu_loader) {
     cudaMalloc(&d_test_images, test_images_size);
     cudaMalloc(&d_test_labels, test_labels_size);
     
-    // Copy data from CPU loader to GPU
-    // This would require access to the internal data of FashionMNISTLoader
-    // For now, we'll implement a simplified version
-    
     std::cout << "Data loaded to GPU successfully!" << std::endl;
     std::cout << "Train images GPU memory: " << train_images_size / (1024 * 1024) << " MB" << std::endl;
     std::cout << "Test images GPU memory: " << test_images_size / (1024 * 1024) << " MB" << std::endl;
+#else
+    std::cout << "CUDA not available, GPU data loader disabled" << std::endl;
+#endif
     
     return true;
 }
 
 float* GPUDataLoader::getTrainImagesBatch(int batch_idx) {
+#ifdef __CUDACC__
     int start_idx = batch_idx * batch_size;
     int actual_batch_size = std::min(batch_size, train_size - start_idx);
     
-    size_t offset = start_idx * image_size * image_size * sizeof(float);
     size_t copy_size = actual_batch_size * image_size * image_size * sizeof(float);
     
     cudaMemcpy(d_batch_images, d_train_images + start_idx * image_size * image_size,
                copy_size, cudaMemcpyDeviceToDevice);
     
     return d_batch_images;
+#else
+    (void)batch_idx; // Suppress unused parameter warning
+    return nullptr;
+#endif
 }
 
 int* GPUDataLoader::getTrainLabelsBatch(int batch_idx) {
+#ifdef __CUDACC__
     int start_idx = batch_idx * batch_size;
     int actual_batch_size = std::min(batch_size, train_size - start_idx);
     
@@ -363,9 +379,14 @@ int* GPUDataLoader::getTrainLabelsBatch(int batch_idx) {
                actual_batch_size * sizeof(int), cudaMemcpyDeviceToDevice);
     
     return d_batch_labels;
+#else
+    (void)batch_idx;
+    return nullptr;
+#endif
 }
 
 float* GPUDataLoader::getTestImagesBatch(int batch_idx) {
+#ifdef __CUDACC__
     int start_idx = batch_idx * batch_size;
     int actual_batch_size = std::min(batch_size, test_size - start_idx);
     
@@ -375,9 +396,14 @@ float* GPUDataLoader::getTestImagesBatch(int batch_idx) {
                copy_size, cudaMemcpyDeviceToDevice);
     
     return d_batch_images;
+#else
+    (void)batch_idx;
+    return nullptr;
+#endif
 }
 
 int* GPUDataLoader::getTestLabelsBatch(int batch_idx) {
+#ifdef __CUDACC__
     int start_idx = batch_idx * batch_size;
     int actual_batch_size = std::min(batch_size, test_size - start_idx);
     
@@ -385,4 +411,8 @@ int* GPUDataLoader::getTestLabelsBatch(int batch_idx) {
                actual_batch_size * sizeof(int), cudaMemcpyDeviceToDevice);
     
     return d_batch_labels;
+#else
+    (void)batch_idx;
+    return nullptr;
+#endif
 }

@@ -83,6 +83,17 @@ private:
     std::unique_ptr<Matrix> final_output;
     std::unique_ptr<Matrix> logits;
     
+    // QKV matrices
+    std::vector<std::unique_ptr<Matrix>> q_matrices;
+    std::vector<std::unique_ptr<Matrix>> k_matrices;
+    std::vector<std::unique_ptr<Matrix>> v_matrices;
+    
+    // Dropout masks
+    std::vector<std::unique_ptr<Matrix>> dropout_masks;
+    
+    // Gradient workspace
+    std::vector<std::unique_ptr<Matrix>> grad_activations;
+    
     // Gradients
     std::unique_ptr<Matrix> grad_patch_proj_weight;
     std::unique_ptr<Matrix> grad_patch_proj_bias;
@@ -91,6 +102,11 @@ private:
     std::vector<std::unique_ptr<Matrix>> grad_mlp_fc1_weight;
     std::vector<std::unique_ptr<Matrix>> grad_mlp_fc2_weight;
     std::unique_ptr<Matrix> grad_head_weight;
+    std::unique_ptr<Matrix> grad_head_bias;
+    
+    // Regularization parameters
+    float dropout_rate;
+    float weight_decay;
     
 public:
     VisionTransformer(int img_size = 28, int patch_size = 4, int in_channels = 1,
@@ -134,6 +150,33 @@ extern "C" {
     void launch_cross_entropy_loss_kernel(float* predictions, int* targets, 
                                         float* loss, int batch_size, 
                                         int num_classes);
+    
+    void launch_cross_entropy_backward_kernel(float* predictions, int* targets,
+                                            float* grad_output, int batch_size,
+                                            int num_classes);
+    
+    // Backward pass kernels
+    void launch_compute_gradients_kernel(float* grad_output, float* activations,
+                                       float* grad_weights, int batch_size,
+                                       int input_dim, int output_dim);
+    
+    void launch_backward_linear_kernel(float* grad_output, float* weights,
+                                     float* grad_input, int batch_size,
+                                     int input_dim, int output_dim);
+    
+    void launch_gelu_backward_kernel(float* grad_output, float* input,
+                                   float* grad_input, int size);
+    
+    // Attention kernels
+    void launch_qkv_projection_kernel(float* input, float* qkv_weight, float* qkv_bias,
+                                    float* q_out, float* k_out, float* v_out,
+                                    int batch_size, int seq_len, int embed_dim);
+    
+    void launch_attention_scores_kernel(float* q, float* k, float* scores,
+                                      int batch_size, int num_heads, int seq_len, int head_dim);
+    
+    void launch_softmax_attention_kernel(float* scores, float* weights,
+                                       int batch_size, int num_heads, int seq_len);
 }
 
 #endif
